@@ -52,7 +52,7 @@ async function respond(request,path) {
     if(request.mode==='navigate') return fetch(config.base+'gate.html',{cache:'no-store'});
     return new Response('Preview password required',{status:401,headers:{'Cache-Control':'no-store'}});
   }
-  if(path===''||path==='index.html'||request.mode==='navigate')path='index.html';
+  if(path===''||path==='index.html'||(request.mode==='navigate'&&!config.files[path]))path='index.html';
   const item=config.files[path];
   if(!item)return new Response('Not found',{status:404});
   try {
