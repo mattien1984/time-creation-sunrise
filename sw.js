@@ -1,4 +1,5 @@
-importScripts('./vault-config.js');
+const release = new URL(self.location.href).searchParams.get('v');
+importScripts('./vault-config.js'+(release?'?v='+encodeURIComponent(release):''));
 const config = self.VAULT;
 const databaseName = 'time-creation-preview:'+config.base;
 let session;
@@ -7,20 +8,29 @@ const decode = text => Uint8Array.from(atob(text), c=>c.charCodeAt(0));
 
 async function database() {
   return new Promise((resolve,reject) => {
+    let finished=false;
+    const timer=setTimeout(()=>{finished=true;reject(new Error('Preview storage took too long.'));},3000);
     const request=indexedDB.open(databaseName,1);
     request.onupgradeneeded=()=>request.result.createObjectStore('session');
-    request.onsuccess=()=>resolve(request.result);
-    request.onerror=()=>reject(request.error);
+    request.onsuccess=()=>{clearTimeout(timer);if(finished)request.result.close();else resolve(request.result);};
+    request.onerror=()=>{clearTimeout(timer);reject(request.error);};
+    request.onblocked=()=>{clearTimeout(timer);finished=true;reject(new Error('Preview storage is busy.'));};
+  });
+}
+function storageTimeout(promise) {
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(new Error('Preview storage took too long.')),3000);
+    promise.then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});
   });
 }
 async function readSession() {
   const db=await database();
-  try { return await new Promise((resolve,reject)=>{const request=db.transaction('session').objectStore('session').get(config.version);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);}); }
+  try { return await storageTimeout(new Promise((resolve,reject)=>{const request=db.transaction('session').objectStore('session').get(config.version);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);})); }
   finally {db.close();}
 }
 async function saveSession(value) {
   const db=await database();
-  try {await new Promise((resolve,reject)=>{const transaction=db.transaction('session','readwrite');transaction.objectStore('session').clear();transaction.objectStore('session').put(value,config.version);transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);transaction.onabort=()=>reject(transaction.error);});}
+  try {await storageTimeout(new Promise((resolve,reject)=>{const transaction=db.transaction('session','readwrite');transaction.objectStore('session').clear();transaction.objectStore('session').put(value,config.version);transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);transaction.onabort=()=>reject(transaction.error);}));}
   finally {db.close();}
 }
 const restored=readSession().then(value=>{if(value?.expires>Date.now())session=value;}).catch(()=>{});
@@ -36,6 +46,7 @@ self.addEventListener('message',event=>{
   if(event.data?.type!=='unlock'||!event.ports[0])return;
   event.waitUntil((async()=>{
     try {
+      if(event.data.version && event.data.version!==config.version)throw new Error('The preview has been updated. Reload this page and enter the password again.');
       await restored;
       const index=await decryptFile('index.html',event.data.key);
       session={key:event.data.key,expires:Date.now()+12*60*60*1000};
