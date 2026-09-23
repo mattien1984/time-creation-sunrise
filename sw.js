@@ -56,13 +56,47 @@ self.addEventListener('message',event=>{
     } catch(error) {event.ports[0].postMessage({ok:false,error:error.name==='OperationError'?'That password didn’t match. Please try again.':error.message});}
   })());
 });
+// Re-check only document navigations. A cached, unlocked old shell must not
+// keep requesting ciphertext removed by a newer deployment.
+let releaseProbe, checkedAt=0, checkedToken, newerRelease=false;
+async function boundedNetwork(task, milliseconds=2500) {
+  const controller=new AbortController();let timer;
+  try {return await Promise.race([task(controller.signal),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Preview network timed out.')),milliseconds);})]);}
+  finally {clearTimeout(timer);controller.abort();}
+}
+async function hasNewRelease(url) {
+  if(newerRelease)return true;
+  const token=new URL(url).searchParams.get('v')||'';
+  if(!releaseProbe&&(Date.now()-checkedAt>30000||checkedToken!==token)) {
+    releaseProbe=boundedNetwork(async signal=>{
+      const response=await fetch(config.base+'vault-config.js?check='+Date.now(),{cache:'no-store',signal});
+      if(!response.ok)throw new Error('Manifest unavailable');
+      const source=await response.text();
+      const match=/^self\.VAULT\s*=\s*(\{[\s\S]*\})\s*;?\s*$/.exec(source);
+      if(!match)throw new Error('Invalid manifest');
+      const latest=JSON.parse(match[1]);
+      if(typeof latest.version!=='string'||latest.base!==config.base)throw new Error('Invalid release');
+      newerRelease=latest.version!==config.version;checkedAt=Date.now();checkedToken=token;
+    }).catch(()=>{}).finally(()=>{releaseProbe=undefined;});
+  }
+  await releaseProbe;
+  return newerRelease;
+}
+async function passwordPage() {
+  try {return await boundedNetwork(async signal=>{
+    const response=await fetch(config.base+'gate.html',{cache:'no-store',signal});
+    return new Response(await response.arrayBuffer(),{status:response.status,headers:response.headers});
+  },5000);}
+  catch {return new Response('The preview could not connect. Please reload to try again.',{status:503,headers:{'Content-Type':'text/plain','Cache-Control':'no-store'}});}
+}
 async function respond(request,path) {
   await restored;
   if(!session||session.expires<=Date.now()) {
     session=undefined;decrypted.clear();
-    if(request.mode==='navigate') return fetch(config.base+'gate.html',{cache:'no-store'});
+    if(request.mode==='navigate') return passwordPage();
     return new Response('Preview password required',{status:401,headers:{'Cache-Control':'no-store'}});
   }
+  if(request.mode==='navigate'&&await hasNewRelease(request.url))return passwordPage();
   if(path===''||path==='index.html'||(request.mode==='navigate'&&!config.files[path]))path='index.html';
   const item=config.files[path];
   if(!item)return new Response('Not found',{status:404});

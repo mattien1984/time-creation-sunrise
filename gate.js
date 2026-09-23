@@ -46,7 +46,8 @@
       field.value='';
       // Navigation is controlled by the activated worker. Waiting for a
       // controllerchange on the old password document can strand Safari.
-      location.replace(location.pathname.startsWith(VAULT.base) ? location.href : VAULT.base);
+      const directGate=location.pathname===VAULT.base+'gate.html';
+      location.replace(directGate ? VAULT.base+(location.search||'')+(location.hash||'') : location.pathname.startsWith(VAULT.base) ? location.href : VAULT.base);
     } catch(error) {status.textContent=error.message; button.disabled=false;field.focus();field.select();}
   });
 })();
